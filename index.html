@@ -1,0 +1,1182 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>シフト台帳</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          serif: ['Fraunces', 'serif'],
+          sans: ['Inter', 'sans-serif'],
+          mono: ['IBM Plex Mono', 'monospace']
+        },
+        colors: {
+          paper: '#F6F5F1'
+        }
+      }
+    }
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { background: #F6F5F1; }
+  #loading-screen {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: #F6F5F1; font-family: 'Inter', sans-serif; color: #57534e; font-size: 14px; z-index: 9999;
+  }
+  #error-banner {
+    position: fixed; top: 0; left: 0; right: 0; background: #dc2626; color: #fff;
+    font-size: 12px; padding: 10px 14px; z-index: 10000; font-family: 'Inter', sans-serif; display: none;
+    white-space: pre-wrap;
+  }
+  #print-section { display: none; }
+  @media print {
+    body * { visibility: hidden; }
+    #print-section, #print-section * { visibility: visible; }
+    #print-section {
+      display: block !important;
+      position: absolute; left: 0; top: 0; width: 100%; padding: 20px;
+      font-family: 'Inter', sans-serif; color: #111;
+    }
+    #print-section h1 { font-size: 18px; margin-bottom: 8px; }
+    #print-section h2 { font-size: 14px; margin: 16px 0 6px; }
+    #print-section table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+    #print-section th, #print-section td { border: 1px solid #ccc; padding: 4px 8px; font-size: 12px; text-align: left; }
+  }
+</style>
+</head>
+<body class="font-sans text-stone-800">
+<div id="loading-screen">読み込み中…</div>
+<div id="error-banner"></div>
+<div id="root"></div>
+
+<script>
+  window.addEventListener('error', function (e) {
+    var banner = document.getElementById('error-banner');
+    var loading = document.getElementById('loading-screen');
+    if (banner) {
+      banner.style.display = 'block';
+      banner.innerText = 'エラーが発生しました: ' + (e && e.message ? e.message : '不明なエラー');
+    }
+    if (loading) loading.style.display = 'none';
+  });
+</script>
+
+<script type="text/babel" data-presets="react">
+
+/* ===================== 定数 ===================== */
+
+const APP_VERSION = 'v1';
+
+const COLORS = [
+  '#6B4226', '#2F4F3E', '#2B3A55', '#7B3B3B', '#8A6D3B', '#4A5D53', '#5C4033', '#3B4B5C',
+  '#6B5B95', '#4B4B4B', '#7A6C5D', '#556B5D', '#7D5A50', '#3E5C50', '#5D4E60', '#6E4B3A',
+  '#4E6E58', '#6B4C4C', '#3A4750', '#8C7853', '#5A5A72', '#7A4B5A', '#4C5B61', '#6D5D4B',
+  '#5B4B6E', '#476072'
+];
+
+const INPUT_CLASS = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-stone-800/20 focus:border-stone-400";
+
+/* ===================== ユーティリティ ===================== */
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function toDateStr(y, m, d) { return y + '-' + pad2(m + 1) + '-' + pad2(d); }
+
+function parseDateStr(s) {
+  const parts = (s || '1970-01-01').split('-').map(Number);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function formatCurrency(n) {
+  const v = Math.round(Number(n) || 0);
+  return '¥' + v.toLocaleString('ja-JP');
+}
+
+function formatHours(h) {
+  if (!isFinite(h)) return '0時間';
+  const hh = Math.floor(h);
+  const mm = Math.round((h - hh) * 60);
+  if (mm === 0) return hh + '時間';
+  if (mm === 60) return (hh + 1) + '時間';
+  return hh + '時間' + mm + '分';
+}
+
+function timeToMinutes(t) {
+  const parts = (t || '0:0').split(':').map(Number);
+  return (parts[0] || 0) * 60 + (parts[1] || 0);
+}
+
+function overlapMinutes(aS, aE, bS, bE) {
+  return Math.max(0, Math.min(aE, bE) - Math.max(aS, bS));
+}
+
+function premiumHoursInRange(shiftStart, shiftEnd, premStart, premEnd) {
+  let pS = premStart, pE = premEnd;
+  if (pE <= pS) pE += 1440;
+  let total = 0;
+  for (let d = -1; d <= 1; d++) {
+    total += overlapMinutes(shiftStart, shiftEnd, pS + d * 1440, pE + d * 1440);
+  }
+  return total / 60;
+}
+
+function getWeekdayIndex(dateStr) { return parseDateStr(dateStr).getDay(); }
+
+function buildMonthGrid(year, month, weekStart) {
+  const firstDay = new Date(year, month, 1);
+  const startOffset = weekStart === 'monday' ? (firstDay.getDay() + 6) % 7 : firstDay.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
+/* ===================== 正規化（後方互換） ===================== */
+
+function normalizeWorkplace(w) {
+  w = w || {};
+  const customSrc = Array.isArray(w.customAllowances) ? w.customAllowances : [];
+  const nightSrc = Array.isArray(w.nightPremiums) ? w.nightPremiums : [];
+  return {
+    id: w.id || uid(),
+    name: w.name || '無題の勤務先',
+    color: w.color || COLORS[0],
+    tags: Array.isArray(w.tags) ? w.tags.filter(Boolean)
+      : (typeof w.tags === 'string' ? w.tags.split(',').map(s => s.trim()).filter(Boolean) : []),
+    payType: w.payType === 'daily' ? 'daily' : 'hourly',
+    payAmount: Number(w.payAmount) || 0,
+    transportationFee: Number(w.transportationFee) || 0,
+    qualificationAllowance: {
+      amount: Number(w.qualificationAllowance && w.qualificationAllowance.amount) || 0,
+      unit: (w.qualificationAllowance && w.qualificationAllowance.unit === 'hour') ? 'hour' : 'day'
+    },
+    customAllowances: [0, 1, 2].map(i => ({
+      name: (customSrc[i] && customSrc[i].name) || '',
+      amount: Number(customSrc[i] && customSrc[i].amount) || 0
+    })),
+    nightPremiums: [0, 1].map(i => ({
+      start: (nightSrc[i] && nightSrc[i].start) || (i === 0 ? '22:00' : '00:00'),
+      end: (nightSrc[i] && nightSrc[i].end) || (i === 0 ? '05:00' : '00:00'),
+      rate: Number(nightSrc[i] && nightSrc[i].rate) || 0
+    })),
+    satAllowancePerHour: Number(w.satAllowancePerHour) || 0,
+    sunAllowancePerHour: Number(w.sunAllowancePerHour) || 0,
+    holidayAllowancePerHour: Number(w.holidayAllowancePerHour) || 0
+  };
+}
+
+function normalizeShift(s) {
+  s = s || {};
+  const hasWorkplace = !!s.workplaceId;
+  const de = s.directEntry || {};
+  const today = new Date();
+  return {
+    id: s.id || uid(),
+    date: s.date || toDateStr(today.getFullYear(), today.getMonth(), today.getDate()),
+    workplaceId: hasWorkplace ? s.workplaceId : null,
+    directEntry: hasWorkplace ? null : {
+      name: de.name || '無題',
+      payType: de.payType === 'daily' ? 'daily' : 'hourly',
+      payAmount: Number(de.payAmount) || 0,
+      tags: Array.isArray(de.tags) ? de.tags.filter(Boolean)
+        : (typeof de.tags === 'string' ? de.tags.split(',').map(t => t.trim()).filter(Boolean) : [])
+    },
+    startTime: s.startTime || '09:00',
+    endTime: s.endTime || '17:00',
+    isAllDay: !!s.isAllDay,
+    isHoliday: !!s.isHoliday,
+    memo: s.memo || ''
+  };
+}
+
+function normalizeSettings(s) {
+  s = s || {};
+  return { weekStart: s.weekStart === 'monday' ? 'monday' : 'sunday' };
+}
+
+/* ===================== 給料計算 ===================== */
+
+function calcShiftDetail(shift, workplaces) {
+  const wp = shift.workplaceId ? workplaces.find(w => w.id === shift.workplaceId) : null;
+  const name = wp ? wp.name : ((shift.directEntry && shift.directEntry.name) || '無題');
+  const color = wp ? wp.color : '#8A8A8A';
+  const payType = wp ? wp.payType : ((shift.directEntry && shift.directEntry.payType) || 'hourly');
+  const payAmount = wp ? wp.payAmount : ((shift.directEntry && shift.directEntry.payAmount) || 0);
+
+  let shiftStart, shiftEnd, hours;
+  if (shift.isAllDay) {
+    shiftStart = 0; shiftEnd = 1440; hours = 24;
+  } else {
+    shiftStart = timeToMinutes(shift.startTime);
+    shiftEnd = timeToMinutes(shift.endTime);
+    if (shiftEnd <= shiftStart) shiftEnd += 1440;
+    hours = (shiftEnd - shiftStart) / 60;
+  }
+
+  const base = payType === 'hourly' ? payAmount * hours : payAmount;
+
+  let nightPremium = 0, dayAllowance = 0, qualificationAllowance = 0, customTotal = 0, transportationFee = 0;
+  const customBreakdown = [];
+
+  if (wp && payType === 'hourly') {
+    wp.nightPremiums.forEach(p => {
+      if (!p.rate) return;
+      const h = premiumHoursInRange(shiftStart, shiftEnd, timeToMinutes(p.start), timeToMinutes(p.end));
+      nightPremium += payAmount * (p.rate / 100) * h;
+    });
+  }
+
+  if (wp) {
+    const wd = getWeekdayIndex(shift.date);
+    if (shift.isHoliday) {
+      dayAllowance = wp.holidayAllowancePerHour * hours;
+    } else if (wd === 6) {
+      dayAllowance = wp.satAllowancePerHour * hours;
+    } else if (wd === 0) {
+      dayAllowance = wp.sunAllowancePerHour * hours;
+    }
+
+    if (wp.qualificationAllowance.amount) {
+      qualificationAllowance = wp.qualificationAllowance.unit === 'hour'
+        ? wp.qualificationAllowance.amount * hours
+        : wp.qualificationAllowance.amount;
+    }
+
+    wp.customAllowances.forEach(a => {
+      if (a.amount) { customTotal += a.amount; customBreakdown.push(a); }
+    });
+
+    transportationFee = wp.transportationFee || 0;
+  }
+
+  const total = base + nightPremium + dayAllowance + qualificationAllowance + customTotal + transportationFee;
+
+  return {
+    name, color, hours, base, nightPremium, dayAllowance, qualificationAllowance,
+    customTotal, customBreakdown, transportationFee, total,
+    isDirect: !wp,
+    tags: wp ? wp.tags : ((shift.directEntry && shift.directEntry.tags) || [])
+  };
+}
+
+/* ===================== 集計期間 ===================== */
+
+function getPeriodRange(type, refDate, weekStart) {
+  const d = new Date(refDate);
+  if (type === 'day') {
+    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const end = new Date(start); end.setDate(end.getDate() + 1);
+    return { start, end, label: start.getFullYear() + '年' + (start.getMonth() + 1) + '月' + start.getDate() + '日' };
+  }
+  if (type === 'week') {
+    const dow = d.getDay();
+    const offset = weekStart === 'monday' ? (dow + 6) % 7 : dow;
+    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - offset);
+    const end = new Date(start); end.setDate(end.getDate() + 7);
+    const endIncl = new Date(end); endIncl.setDate(endIncl.getDate() - 1);
+    return { start, end, label: (start.getMonth() + 1) + '/' + start.getDate() + ' 〜 ' + (endIncl.getMonth() + 1) + '/' + endIncl.getDate() };
+  }
+  if (type === 'month') {
+    const start = new Date(d.getFullYear(), d.getMonth(), 1);
+    const end = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    return { start, end, label: start.getFullYear() + '年' + (start.getMonth() + 1) + '月' };
+  }
+  const start = new Date(d.getFullYear(), 0, 1);
+  const end = new Date(d.getFullYear() + 1, 0, 1);
+  return { start, end, label: start.getFullYear() + '年' };
+}
+
+function shiftInRange(dateStr, start, end) {
+  const d = parseDateStr(dateStr);
+  return d >= start && d < end;
+}
+
+function movePeriod(type, refDate, dir) {
+  const d = new Date(refDate);
+  if (type === 'day') d.setDate(d.getDate() + dir);
+  else if (type === 'week') d.setDate(d.getDate() + 7 * dir);
+  else if (type === 'month') d.setMonth(d.getMonth() + dir);
+  else d.setFullYear(d.getFullYear() + dir);
+  return d;
+}
+
+/* ===================== localStorage フック ===================== */
+
+function useLocalStorageState(key, normalizeFn, isArray) {
+  const [state, setState] = React.useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return isArray ? [] : normalizeFn({});
+      const parsed = JSON.parse(raw);
+      if (isArray) return Array.isArray(parsed) ? parsed.map(normalizeFn) : [];
+      return normalizeFn(parsed || {});
+    } catch (e) {
+      return isArray ? [] : normalizeFn({});
+    }
+  });
+  React.useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch (e) {}
+  }, [state, key]);
+  return [state, setState];
+}
+
+/* ===================== アイコン（自前インラインSVG） ===================== */
+
+const Icon = ({ children, size = 20, className = '' }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className}>{children}</svg>
+);
+const IconCalendar = (p) => <Icon {...p}><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></Icon>;
+const IconBriefcase = (p) => <Icon {...p}><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18"/></Icon>;
+const IconBarChart = (p) => <Icon {...p}><path d="M4 20V10M12 20V4M20 20v-7"/></Icon>;
+const IconSettings = (p) => <Icon {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.16.4.42.75.76 1H21a2 2 0 0 1 0 4h-.09c-.34.25-.6.6-.76 1z"/></Icon>;
+const IconPlus = (p) => <Icon {...p}><path d="M12 5v14M5 12h14"/></Icon>;
+const IconX = (p) => <Icon {...p}><path d="M18 6 6 18M6 6l12 12"/></Icon>;
+const IconChevronLeft = (p) => <Icon {...p}><path d="M15 18l-6-6 6-6"/></Icon>;
+const IconChevronRight = (p) => <Icon {...p}><path d="M9 18l6-6-6-6"/></Icon>;
+const IconTrash = (p) => <Icon {...p}><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z"/></Icon>;
+const IconEdit = (p) => <Icon {...p}><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></Icon>;
+const IconPrinter = (p) => <Icon {...p}><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></Icon>;
+const IconDownload = (p) => <Icon {...p}><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16"/></Icon>;
+const IconUpload = (p) => <Icon {...p}><path d="M12 21V9m0 0-4 4m4-4 4 4M4 3h16"/></Icon>;
+const IconSearch = (p) => <Icon {...p}><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></Icon>;
+
+/* ===================== 共通コンポーネント ===================== */
+
+function BottomSheet({ open, onClose, title, children }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-40">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+      <div className="absolute bottom-0 left-0 right-0 bg-paper rounded-t-2xl max-h-[88vh] overflow-y-auto shadow-2xl">
+        <div className="sticky top-0 bg-paper/95 backdrop-blur border-b border-stone-200 px-4 py-3 flex items-center justify-between">
+          <h2 className="font-serif text-lg font-semibold">{title}</h2>
+          <button onClick={onClose} className="p-1.5 rounded-full hover:bg-stone-200/60"><IconX size={18}/></button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({ message, onCancel, onConfirm, confirmLabel = '削除する', danger = true }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/50" onClick={onCancel}></div>
+      <div className="relative bg-white rounded-xl p-5 w-full max-w-sm shadow-xl">
+        <p className="text-sm text-stone-700 mb-4 whitespace-pre-line">{message}</p>
+        <div className="flex gap-2">
+          <button onClick={onCancel} className="flex-1 py-2 rounded-lg border border-stone-300 text-sm font-medium">キャンセル</button>
+          <button onClick={onConfirm} className={"flex-1 py-2 rounded-lg text-white text-sm font-medium " + (danger ? 'bg-rose-600' : 'bg-stone-800')}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children, className = '' }) {
+  return (
+    <label className={"block " + className}>
+      <span className="block text-xs text-stone-500 mb-1">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Row({ label, value, bold }) {
+  return (
+    <div className={"flex justify-between " + (bold ? 'font-semibold text-base' : '')}>
+      <span className="text-stone-500">{label}</span>
+      <span>{value}</span>
+    </div>
+  );
+}
+
+/* ===================== カレンダータブ ===================== */
+
+function CalendarTab({ workplaces, shifts, settings, onOpenDay }) {
+  const today = new Date();
+  const [year, setYear] = React.useState(today.getFullYear());
+  const [month, setMonth] = React.useState(today.getMonth());
+
+  const weekStart = settings.weekStart;
+  const weekdayLabels = weekStart === 'monday' ? ['月','火','水','木','金','土','日'] : ['日','月','火','水','木','金','土'];
+  const grid = buildMonthGrid(year, month, weekStart);
+
+  const shiftsByDate = React.useMemo(() => {
+    const map = {};
+    shifts.forEach(s => {
+      if (!map[s.date]) map[s.date] = [];
+      map[s.date].push(s);
+    });
+    Object.keys(map).forEach(date => {
+      map[date].sort((a, b) => {
+        if (a.isAllDay && !b.isAllDay) return -1;
+        if (!a.isAllDay && b.isAllDay) return 1;
+        return timeToMinutes(a.startTime) - timeToMinutes(b.startTime);
+      });
+    });
+    return map;
+  }, [shifts]);
+
+  function prevMonth() { setMonth(m => { if (m === 0) { setYear(y => y - 1); return 11; } return m - 1; }); }
+  function nextMonth() { setMonth(m => { if (m === 11) { setYear(y => y + 1); return 0; } return m + 1; }); }
+
+  function dayStats(dateStr) {
+    const list = shiftsByDate[dateStr] || [];
+    let hours = 0, amount = 0;
+    list.forEach(s => { const d = calcShiftDetail(s, workplaces); hours += d.hours; amount += d.total; });
+    return { count: list.length, hours, amount };
+  }
+
+  function weekStats(week) {
+    let hours = 0, amount = 0;
+    week.forEach(d => {
+      if (d == null) return;
+      const st = dayStats(toDateStr(year, month, d));
+      hours += st.hours; amount += st.amount;
+    });
+    return { hours, amount };
+  }
+
+  return (
+    <div className="px-3 pt-4">
+      <header className="flex items-center justify-between mb-4 px-1">
+        <button onClick={prevMonth} className="p-2 rounded-full hover:bg-stone-200/60 active:bg-stone-300/60"><IconChevronLeft/></button>
+        <h1 className="font-serif text-2xl font-semibold tracking-wide">{year}年 {month + 1}月</h1>
+        <button onClick={nextMonth} className="p-2 rounded-full hover:bg-stone-200/60 active:bg-stone-300/60"><IconChevronRight/></button>
+      </header>
+
+      <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+        <div className="grid grid-cols-8 bg-stone-50 border-b border-stone-200 text-[11px] font-medium text-stone-500">
+          {weekdayLabels.map((w, i) => (
+            <div key={i} className={"py-2 text-center " + (w === '日' ? 'text-rose-500' : '') + (w === '土' ? 'text-blue-500' : '')}>{w}</div>
+          ))}
+          <div className="py-2 text-center border-l border-stone-200">週計</div>
+        </div>
+        {grid.map((week, wi) => {
+          const ws = weekStats(week);
+          return (
+            <div key={wi} className="grid grid-cols-8 border-b border-stone-100 last:border-b-0">
+              {week.map((d, di) => {
+                if (d == null) return <div key={di} className="min-h-[76px] border-r border-stone-100 bg-stone-50/40"></div>;
+                const dateStr = toDateStr(year, month, d);
+                const stat = dayStats(dateStr);
+                const list = shiftsByDate[dateStr] || [];
+                const isToday = dateStr === toDateStr(today.getFullYear(), today.getMonth(), today.getDate());
+                return (
+                  <button key={di} onClick={() => onOpenDay(dateStr)}
+                    className={"min-h-[76px] border-r border-stone-100 last:border-r-0 p-1 text-left flex flex-col gap-0.5 hover:bg-amber-50/60 active:bg-amber-100/70 " + (isToday ? 'bg-amber-50' : '')}>
+                    <span className={"text-xs font-mono " + (isToday ? 'inline-flex items-center justify-center w-5 h-5 rounded-full bg-stone-800 text-white' : 'text-stone-600')}>{d}</span>
+                    <div className="flex flex-wrap gap-0.5">
+                      {list.slice(0, 4).map(s => (
+                        <span key={s.id} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: calcShiftDetail(s, workplaces).color }}></span>
+                      ))}
+                    </div>
+                    {stat.count > 0 && (
+                      <div className="mt-auto text-[9px] leading-tight font-mono text-stone-500">
+                        <div>{stat.count}件</div>
+                        <div>{stat.hours.toFixed(1)}h</div>
+                        <div>{formatCurrency(stat.amount)}</div>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+              <div className="min-h-[76px] border-l border-stone-100 p-1 flex flex-col justify-center items-center bg-stone-50/60 text-center">
+                <div className="text-[10px] font-mono text-stone-600">{ws.hours.toFixed(1)}h</div>
+                <div className="text-[10px] font-mono font-semibold text-stone-800">{formatCurrency(ws.amount)}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ===================== 日別シート・シフト編集 ===================== */
+
+function DaySheet({ date, workplaces, shifts, onClose, onAddShift, onEditShift, onDeleteShift }) {
+  const list = shifts.filter(s => s.date === date).sort((a, b) => {
+    if (a.isAllDay && !b.isAllDay) return -1;
+    if (!a.isAllDay && b.isAllDay) return 1;
+    return timeToMinutes(a.startTime) - timeToMinutes(b.startTime);
+  });
+  const [confirmDeleteId, setConfirmDeleteId] = React.useState(null);
+  const d = parseDateStr(date);
+  const label = d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日（' + ['日','月','火','水','木','金','土'][d.getDay()] + '）';
+
+  return (
+    <BottomSheet open title={label} onClose={onClose}>
+      <div className="space-y-2 mb-4">
+        {list.length === 0 && <p className="text-sm text-stone-500 py-6 text-center">この日のシフトはまだありません</p>}
+        {list.map(s => {
+          const detail = calcShiftDetail(s, workplaces);
+          return (
+            <div key={s.id} className="bg-white rounded-lg border border-stone-200 p-3 flex items-center gap-3" style={{ borderLeftColor: detail.color, borderLeftWidth: '4px' }}>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium text-sm truncate">{detail.name}</span>
+                  {s.isHoliday && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 flex-shrink-0">祝</span>}
+                </div>
+                <div className="text-xs text-stone-500 font-mono mt-0.5">
+                  {s.isAllDay ? '終日' : (s.startTime + ' - ' + s.endTime)} ・ {formatHours(detail.hours)}
+                </div>
+                <div className="text-sm font-mono font-semibold mt-1">{formatCurrency(detail.total)}</div>
+              </div>
+              <div className="flex flex-col gap-1 flex-shrink-0">
+                <button onClick={() => onEditShift(s.id)} className="p-1.5 rounded-full hover:bg-stone-100"><IconEdit size={16}/></button>
+                <button onClick={() => setConfirmDeleteId(s.id)} className="p-1.5 rounded-full hover:bg-rose-50 text-rose-500"><IconTrash size={16}/></button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={onAddShift} className="w-full py-2.5 rounded-lg bg-stone-800 text-white font-medium text-sm flex items-center justify-center gap-1.5 active:bg-stone-700">
+        <IconPlus size={16}/> シフトを追加
+      </button>
+
+      {confirmDeleteId && (
+        <ConfirmDialog message="このシフトを削除しますか？" onCancel={() => setConfirmDeleteId(null)}
+          onConfirm={() => { onDeleteShift(confirmDeleteId); setConfirmDeleteId(null); }} />
+      )}
+    </BottomSheet>
+  );
+}
+
+function ShiftEditorSheet({ date, shift, workplaces, onClose, onSave, onDelete }) {
+  const isNew = !shift;
+  const [mode, setMode] = React.useState(shift ? (shift.workplaceId ? 'existing' : 'direct') : (workplaces.length ? 'existing' : 'direct'));
+  const [workplaceId, setWorkplaceId] = React.useState(shift && shift.workplaceId ? shift.workplaceId : (workplaces[0] ? workplaces[0].id : ''));
+  const [directName, setDirectName] = React.useState((shift && shift.directEntry && shift.directEntry.name) || '');
+  const [directPayType, setDirectPayType] = React.useState((shift && shift.directEntry && shift.directEntry.payType) || 'hourly');
+  const [directPayAmount, setDirectPayAmount] = React.useState((shift && shift.directEntry && shift.directEntry.payAmount) || '');
+  const [directTags, setDirectTags] = React.useState(((shift && shift.directEntry && shift.directEntry.tags) || []).join(', '));
+  const [startTime, setStartTime] = React.useState((shift && shift.startTime) || '09:00');
+  const [endTime, setEndTime] = React.useState((shift && shift.endTime) || '17:00');
+  const [isAllDay, setIsAllDay] = React.useState((shift && shift.isAllDay) || false);
+  const [isHoliday, setIsHoliday] = React.useState((shift && shift.isHoliday) || false);
+  const [memo, setMemo] = React.useState((shift && shift.memo) || '');
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+
+  const draftShift = {
+    id: shift ? shift.id : undefined,
+    date,
+    workplaceId: mode === 'existing' ? workplaceId : null,
+    directEntry: mode === 'direct' ? { name: directName, payType: directPayType, payAmount: Number(directPayAmount) || 0, tags: directTags } : null,
+    startTime, endTime, isAllDay, isHoliday, memo
+  };
+  const normalizedDraft = normalizeShift(draftShift);
+  const preview = calcShiftDetail(normalizedDraft, workplaces);
+
+  function handleSave() {
+    onSave(normalizeShift({ ...draftShift, id: shift ? shift.id : undefined }));
+  }
+
+  const canSave = mode === 'existing' ? !!workplaceId : directName.trim().length > 0;
+
+  return (
+    <BottomSheet open title={isNew ? 'シフトを追加' : 'シフトを編集'} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="flex rounded-lg border border-stone-300 overflow-hidden text-sm">
+          <button onClick={() => setMode('existing')} className={"flex-1 py-2 " + (mode === 'existing' ? 'bg-stone-800 text-white' : 'bg-white text-stone-600')}>登録済みから選ぶ</button>
+          <button onClick={() => setMode('direct')} className={"flex-1 py-2 " + (mode === 'direct' ? 'bg-stone-800 text-white' : 'bg-white text-stone-600')}>直接入力</button>
+        </div>
+
+        {mode === 'existing' ? (
+          workplaces.length === 0 ? (
+            <p className="text-sm text-stone-500">登録済みの勤務先がありません。「直接入力」を使うか、勤務先タブから登録してください。</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {workplaces.map(w => (
+                <button key={w.id} onClick={() => setWorkplaceId(w.id)}
+                  className={"flex items-center gap-2 p-2.5 rounded-lg border text-left text-sm " + (workplaceId === w.id ? 'border-stone-800 bg-stone-50' : 'border-stone-200')}>
+                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: w.color }}></span>
+                  <span className="truncate">{w.name}</span>
+                </button>
+              ))}
+            </div>
+          )
+        ) : (
+          <div className="space-y-3">
+            <Field label="事業所名">
+              <input value={directName} onChange={e => setDirectName(e.target.value)} className={INPUT_CLASS} placeholder="例：〇〇薬局" />
+            </Field>
+            <div className="flex gap-2">
+              <Field label="給与形態" className="flex-1">
+                <select value={directPayType} onChange={e => setDirectPayType(e.target.value)} className={INPUT_CLASS}>
+                  <option value="hourly">時給制</option>
+                  <option value="daily">日給制</option>
+                </select>
+              </Field>
+              <Field label={directPayType === 'hourly' ? '時給' : '日給'} className="flex-1">
+                <input type="number" value={directPayAmount} onChange={e => setDirectPayAmount(e.target.value)} className={INPUT_CLASS} placeholder="1200" />
+              </Field>
+            </div>
+            <Field label="タグ（カンマ区切り・任意）">
+              <input value={directTags} onChange={e => setDirectTags(e.target.value)} className={INPUT_CLASS} placeholder="例：介護, 夜勤" />
+            </Field>
+          </div>
+        )}
+
+        <div className="border-t border-stone-200 pt-3 space-y-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={isAllDay} onChange={e => setIsAllDay(e.target.checked)} className="w-4 h-4" />
+            終日（時間を指定しない・24時間扱い）
+          </label>
+          {!isAllDay && (
+            <div className="flex gap-2">
+              <Field label="開始時刻" className="flex-1">
+                <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className={INPUT_CLASS} />
+              </Field>
+              <Field label="終了時刻" className="flex-1">
+                <input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} className={INPUT_CLASS} />
+              </Field>
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={isHoliday} onChange={e => setIsHoliday(e.target.checked)} className="w-4 h-4" />
+            この日は祝日として扱う
+          </label>
+          <Field label="メモ（任意）">
+            <textarea value={memo} onChange={e => setMemo(e.target.value)} className={INPUT_CLASS} rows={2}></textarea>
+          </Field>
+        </div>
+
+        <div className="border-t border-stone-200 pt-3">
+          <h3 className="text-xs font-semibold text-stone-500 mb-2">給料プレビュー</h3>
+          <div className="bg-white rounded-lg border border-stone-200 p-3 font-mono text-sm space-y-1">
+            <Row label="勤務時間" value={formatHours(preview.hours)} />
+            <Row label="基本給" value={formatCurrency(preview.base)} />
+            {preview.nightPremium > 0 && <Row label="深夜等割増" value={formatCurrency(preview.nightPremium)} />}
+            {preview.dayAllowance > 0 && <Row label="曜日・祝日加算" value={formatCurrency(preview.dayAllowance)} />}
+            {preview.qualificationAllowance > 0 && <Row label="資格手当" value={formatCurrency(preview.qualificationAllowance)} />}
+            {preview.customTotal > 0 && <Row label="諸手当" value={formatCurrency(preview.customTotal)} />}
+            {preview.transportationFee > 0 && <Row label="交通費" value={formatCurrency(preview.transportationFee)} />}
+            <div className="border-t border-stone-200 my-1 pt-1">
+              <Row label="合計" value={formatCurrency(preview.total)} bold />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2 pt-1">
+          {!isNew && (
+            <button onClick={() => setConfirmDelete(true)} className="py-2.5 px-4 rounded-lg border border-rose-300 text-rose-600 text-sm font-medium">削除</button>
+          )}
+          <button disabled={!canSave} onClick={handleSave} className="flex-1 py-2.5 rounded-lg bg-stone-800 text-white text-sm font-medium disabled:opacity-40">保存する</button>
+        </div>
+      </div>
+
+      {confirmDelete && (
+        <ConfirmDialog message="このシフトを削除しますか？" onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => { onDelete(shift.id); setConfirmDelete(false); }} />
+      )}
+    </BottomSheet>
+  );
+}
+
+/* ===================== 勤務先タブ ===================== */
+
+function WorkplacesTab({ workplaces, onAdd, onEdit, onDelete }) {
+  const [confirmId, setConfirmId] = React.useState(null);
+  return (
+    <div className="px-3 pt-4 pb-4">
+      <header className="flex items-center justify-between mb-4 px-1">
+        <h1 className="font-serif text-2xl font-semibold">勤務先</h1>
+        <button onClick={onAdd} className="p-2 rounded-full bg-stone-800 text-white active:bg-stone-700"><IconPlus size={18}/></button>
+      </header>
+      {workplaces.length === 0 && <p className="text-sm text-stone-500 text-center py-10">まだ勤務先が登録されていません</p>}
+      <div className="space-y-2">
+        {workplaces.map(w => (
+          <div key={w.id} className="bg-white rounded-lg border border-stone-200 p-3 flex items-center gap-3" style={{ borderLeftColor: w.color, borderLeftWidth: '5px' }}>
+            <button onClick={() => onEdit(w.id)} className="flex-1 min-w-0 text-left">
+              <div className="font-medium text-sm">{w.name}</div>
+              <div className="text-xs text-stone-500 mt-0.5 font-mono">
+                {w.payType === 'hourly' ? ('時給 ' + formatCurrency(w.payAmount)) : ('日給 ' + formatCurrency(w.payAmount))}
+              </div>
+              {w.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {w.tags.map((t, i) => <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500">{t}</span>)}
+                </div>
+              )}
+            </button>
+            <button onClick={() => setConfirmId(w.id)} className="p-2 rounded-full hover:bg-rose-50 text-rose-500 flex-shrink-0"><IconTrash size={16}/></button>
+          </div>
+        ))}
+      </div>
+      {confirmId && (
+        <ConfirmDialog message={"この勤務先を削除しますか？\n登録済みのシフトは残りますが、勤務先の情報は失われます。"}
+          onCancel={() => setConfirmId(null)} onConfirm={() => { onDelete(confirmId); setConfirmId(null); }} />
+      )}
+    </div>
+  );
+}
+
+function WorkplaceEditorSheet({ workplace, onClose, onSave, onDelete }) {
+  const isNew = !workplace;
+  const base = workplace || normalizeWorkplace({});
+  const [name, setName] = React.useState(isNew ? '' : base.name);
+  const [color, setColor] = React.useState(base.color);
+  const [tags, setTags] = React.useState(base.tags.join(', '));
+  const [payType, setPayType] = React.useState(base.payType);
+  const [payAmount, setPayAmount] = React.useState(base.payAmount || '');
+  const [transportationFee, setTransportationFee] = React.useState(base.transportationFee || '');
+  const [qualAmount, setQualAmount] = React.useState(base.qualificationAllowance.amount || '');
+  const [qualUnit, setQualUnit] = React.useState(base.qualificationAllowance.unit);
+  const [customAllowances, setCustomAllowances] = React.useState(base.customAllowances.map(a => ({ name: a.name, amount: a.amount || '' })));
+  const [nightPremiums, setNightPremiums] = React.useState(base.nightPremiums.map(p => ({ start: p.start, end: p.end, rate: p.rate || '' })));
+  const [satAllowance, setSatAllowance] = React.useState(base.satAllowancePerHour || '');
+  const [sunAllowance, setSunAllowance] = React.useState(base.sunAllowancePerHour || '');
+  const [holidayAllowance, setHolidayAllowance] = React.useState(base.holidayAllowancePerHour || '');
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+
+  function updateCustom(i, field, value) {
+    setCustomAllowances(prev => prev.map((a, idx) => idx === i ? { ...a, [field]: value } : a));
+  }
+  function updateNight(i, field, value) {
+    setNightPremiums(prev => prev.map((p, idx) => idx === i ? { ...p, [field]: value } : p));
+  }
+
+  function handleSave() {
+    onSave(normalizeWorkplace({
+      id: workplace ? workplace.id : undefined,
+      name, color, tags, payType,
+      payAmount: Number(payAmount) || 0,
+      transportationFee: Number(transportationFee) || 0,
+      qualificationAllowance: { amount: Number(qualAmount) || 0, unit: qualUnit },
+      customAllowances: customAllowances.map(a => ({ name: a.name, amount: Number(a.amount) || 0 })),
+      nightPremiums: nightPremiums.map(p => ({ start: p.start, end: p.end, rate: Number(p.rate) || 0 })),
+      satAllowancePerHour: Number(satAllowance) || 0,
+      sunAllowancePerHour: Number(sunAllowance) || 0,
+      holidayAllowancePerHour: Number(holidayAllowance) || 0
+    }));
+  }
+
+  const canSave = name.trim().length > 0;
+
+  return (
+    <BottomSheet open title={isNew ? '勤務先を追加' : '勤務先を編集'} onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="事業所名">
+          <input value={name} onChange={e => setName(e.target.value)} className={INPUT_CLASS} placeholder="例：〇〇デイサービス" />
+        </Field>
+
+        <div>
+          <span className="block text-xs text-stone-500 mb-1.5">カラータグ</span>
+          <div className="grid grid-cols-8 gap-2">
+            {COLORS.map(c => (
+              <button key={c} onClick={() => setColor(c)} className={"w-7 h-7 rounded-full " + (color === c ? 'ring-2 ring-offset-2 ring-stone-800' : '')} style={{ backgroundColor: c }} aria-label={c}></button>
+            ))}
+          </div>
+        </div>
+
+        <Field label="自由タグ（カンマ区切り・複数可）">
+          <input value={tags} onChange={e => setTags(e.target.value)} className={INPUT_CLASS} placeholder="例：介護, 資格職" />
+        </Field>
+
+        <div className="flex gap-2">
+          <Field label="給与形態" className="flex-1">
+            <select value={payType} onChange={e => setPayType(e.target.value)} className={INPUT_CLASS}>
+              <option value="hourly">時給制</option>
+              <option value="daily">日給制</option>
+            </select>
+          </Field>
+          <Field label={payType === 'hourly' ? '時給（円）' : '日給（円）'} className="flex-1">
+            <input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} className={INPUT_CLASS} />
+          </Field>
+        </div>
+
+        <Field label="交通費（円・1回あたり）">
+          <input type="number" value={transportationFee} onChange={e => setTransportationFee(e.target.value)} className={INPUT_CLASS} />
+        </Field>
+
+        <div className="border-t border-stone-200 pt-3">
+          <span className="block text-xs font-semibold text-stone-500 mb-2">資格手当</span>
+          <div className="flex gap-2">
+            <input type="number" value={qualAmount} onChange={e => setQualAmount(e.target.value)} className={INPUT_CLASS + ' flex-1'} placeholder="金額" />
+            <select value={qualUnit} onChange={e => setQualUnit(e.target.value)} className={INPUT_CLASS + ' w-28'}>
+              <option value="day">1日単位</option>
+              <option value="hour">時間単位</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="border-t border-stone-200 pt-3">
+          <span className="block text-xs font-semibold text-stone-500 mb-2">自由な手当（最大3枠）</span>
+          <div className="space-y-2">
+            {customAllowances.map((a, i) => (
+              <div key={i} className="flex gap-2">
+                <input value={a.name} onChange={e => updateCustom(i, 'name', e.target.value)} className={INPUT_CLASS + ' flex-1'} placeholder={'手当名 ' + (i + 1)} />
+                <input type="number" value={a.amount} onChange={e => updateCustom(i, 'amount', e.target.value)} className={INPUT_CLASS + ' w-24'} placeholder="金額" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-stone-200 pt-3">
+          <span className="block text-xs font-semibold text-stone-500 mb-2">深夜等の時間帯割増（最大2枠）</span>
+          <div className="space-y-2">
+            {nightPremiums.map((p, i) => (
+              <div key={i} className="flex gap-2 items-end">
+                <Field label="開始" className="flex-1">
+                  <input type="time" value={p.start} onChange={e => updateNight(i, 'start', e.target.value)} className={INPUT_CLASS} />
+                </Field>
+                <Field label="終了" className="flex-1">
+                  <input type="time" value={p.end} onChange={e => updateNight(i, 'end', e.target.value)} className={INPUT_CLASS} />
+                </Field>
+                <Field label="割増率%" className="w-20">
+                  <input type="number" value={p.rate} onChange={e => updateNight(i, 'rate', e.target.value)} className={INPUT_CLASS} />
+                </Field>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-stone-200 pt-3">
+          <span className="block text-xs font-semibold text-stone-500 mb-2">曜日・祝日加算（1時間あたり・円）</span>
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="土曜"><input type="number" value={satAllowance} onChange={e => setSatAllowance(e.target.value)} className={INPUT_CLASS} /></Field>
+            <Field label="日曜"><input type="number" value={sunAllowance} onChange={e => setSunAllowance(e.target.value)} className={INPUT_CLASS} /></Field>
+            <Field label="祝日"><input type="number" value={holidayAllowance} onChange={e => setHolidayAllowance(e.target.value)} className={INPUT_CLASS} /></Field>
+          </div>
+          <p className="text-[10px] text-stone-400 mt-1.5">シフト側の「祝日」フラグがオンの場合は祝日の加算のみが適用され、土曜・日曜の加算とは重複しません。</p>
+        </div>
+
+        <div className="flex gap-2 pt-2">
+          {!isNew && (
+            <button onClick={() => setConfirmDelete(true)} className="py-2.5 px-4 rounded-lg border border-rose-300 text-rose-600 text-sm font-medium">削除</button>
+          )}
+          <button disabled={!canSave} onClick={handleSave} className="flex-1 py-2.5 rounded-lg bg-stone-800 text-white text-sm font-medium disabled:opacity-40">保存する</button>
+        </div>
+      </div>
+
+      {confirmDelete && (
+        <ConfirmDialog message="この勤務先を削除しますか？" onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => { onDelete(workplace.id); setConfirmDelete(false); }} />
+      )}
+    </BottomSheet>
+  );
+}
+
+/* ===================== 集計タブ ===================== */
+
+function SummaryTab({ workplaces, shifts, settings }) {
+  const [periodType, setPeriodType] = React.useState('month');
+  const [refDate, setRefDate] = React.useState(new Date());
+  const [tagFilter, setTagFilter] = React.useState('');
+  const [selectedTag, setSelectedTag] = React.useState(null);
+
+  const range = getPeriodRange(periodType, refDate, settings.weekStart);
+
+  const allTags = React.useMemo(() => {
+    const set = new Set();
+    workplaces.forEach(w => w.tags.forEach(t => set.add(t)));
+    shifts.forEach(s => (s.directEntry && s.directEntry.tags || []).forEach(t => set.add(t)));
+    return Array.from(set);
+  }, [workplaces, shifts]);
+
+  const filterText = tagFilter.trim().toLowerCase();
+
+  const periodShifts = shifts
+    .filter(s => shiftInRange(s.date, range.start, range.end))
+    .filter(s => {
+      if (!selectedTag && !filterText) return true;
+      const detail = calcShiftDetail(s, workplaces);
+      const tags = detail.tags.map(t => t.toLowerCase());
+      if (selectedTag) return tags.includes(selectedTag.toLowerCase());
+      return tags.some(t => t.includes(filterText)) || detail.name.toLowerCase().includes(filterText);
+    })
+    .sort((a, b) => a.date.localeCompare(b.date) || timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+  let totalAmount = 0, totalHours = 0;
+  const byWorkplace = {};
+  periodShifts.forEach(s => {
+    const detail = calcShiftDetail(s, workplaces);
+    totalAmount += detail.total;
+    totalHours += detail.hours;
+    const key = s.workplaceId || ('direct:' + detail.name);
+    if (!byWorkplace[key]) byWorkplace[key] = { name: detail.name, color: detail.color, amount: 0, hours: 0 };
+    byWorkplace[key].amount += detail.total;
+    byWorkplace[key].hours += detail.hours;
+  });
+  const breakdown = Object.values(byWorkplace).sort((a, b) => b.amount - a.amount);
+
+  return (
+    <div className="px-3 pt-4 pb-4">
+      <header className="mb-4 px-1">
+        <h1 className="font-serif text-2xl font-semibold mb-3">集計</h1>
+        <div className="flex rounded-lg border border-stone-300 overflow-hidden text-sm mb-2">
+          {[['day', '日'], ['week', '週'], ['month', '月'], ['year', '年']].map(([v, l]) => (
+            <button key={v} onClick={() => setPeriodType(v)} className={"flex-1 py-1.5 " + (periodType === v ? 'bg-stone-800 text-white' : 'bg-white text-stone-600')}>{l}</button>
+          ))}
+        </div>
+        <div className="flex items-center justify-between">
+          <button onClick={() => setRefDate(d => movePeriod(periodType, d, -1))} className="p-2 rounded-full hover:bg-stone-200/60"><IconChevronLeft/></button>
+          <span className="font-mono text-sm font-medium">{range.label}</span>
+          <button onClick={() => setRefDate(d => movePeriod(periodType, d, 1))} className="p-2 rounded-full hover:bg-stone-200/60"><IconChevronRight/></button>
+        </div>
+      </header>
+
+      <div className="mb-3">
+        <div className="relative">
+          <IconSearch size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input value={tagFilter} onChange={e => { setTagFilter(e.target.value); setSelectedTag(null); }} placeholder="タグ・勤務先名で絞り込み" className={INPUT_CLASS + ' pl-9'} />
+        </div>
+        {allTags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {allTags.map(t => (
+              <button key={t} onClick={() => { setSelectedTag(prev => prev === t ? null : t); setTagFilter(''); }}
+                className={"text-xs px-2 py-1 rounded-full border " + (selectedTag === t ? 'bg-stone-800 text-white border-stone-800' : 'bg-white border-stone-300 text-stone-600')}>{t}</button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-lg border border-stone-200 p-4 mb-3 text-center">
+        <div className="text-3xl font-mono font-bold">{formatCurrency(totalAmount)}</div>
+        <div className="text-sm font-mono text-stone-500 mt-1">{formatHours(totalHours)}</div>
+      </div>
+
+      <div className="bg-white rounded-lg border border-stone-200 divide-y divide-stone-100 mb-3">
+        {breakdown.length === 0 && <p className="text-sm text-stone-500 text-center py-6">この期間のシフトはありません</p>}
+        {breakdown.map((b, i) => (
+          <div key={i} className="flex items-center gap-2.5 px-3 py-2.5">
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: b.color }}></span>
+            <span className="flex-1 text-sm truncate">{b.name}</span>
+            <span className="text-xs font-mono text-stone-500">{formatHours(b.hours)}</span>
+            <span className="text-sm font-mono font-medium w-20 text-right">{formatCurrency(b.amount)}</span>
+          </div>
+        ))}
+      </div>
+
+      <button onClick={() => window.print()} className="w-full py-2.5 rounded-lg border border-stone-300 text-sm font-medium flex items-center justify-center gap-1.5">
+        <IconPrinter size={16}/> PDF出力（印刷）
+      </button>
+
+      <div id="print-section">
+        <h1>シフト台帳 集計 - {range.label}</h1>
+        <p>合計金額：{formatCurrency(totalAmount)} ／ 合計時間：{formatHours(totalHours)}</p>
+        <h2>勤務先別内訳</h2>
+        <table>
+          <thead><tr><th>勤務先</th><th>時間</th><th>金額</th></tr></thead>
+          <tbody>
+            {breakdown.map((b, i) => (<tr key={i}><td>{b.name}</td><td>{formatHours(b.hours)}</td><td>{formatCurrency(b.amount)}</td></tr>))}
+          </tbody>
+        </table>
+        <h2>シフト明細</h2>
+        <table>
+          <thead><tr><th>日付</th><th>勤務先</th><th>時間帯</th><th>時間数</th><th>金額</th></tr></thead>
+          <tbody>
+            {periodShifts.map(s => {
+              const d = calcShiftDetail(s, workplaces);
+              return (<tr key={s.id}><td>{s.date}</td><td>{d.name}</td><td>{s.isAllDay ? '終日' : (s.startTime + '-' + s.endTime)}</td><td>{formatHours(d.hours)}</td><td>{formatCurrency(d.total)}</td></tr>);
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== 設定タブ ===================== */
+
+function SettingsTab({ settings, setSettings, workplaces, shifts, setWorkplaces, setShifts }) {
+  const fileInputRef = React.useRef(null);
+  const [confirmRestore, setConfirmRestore] = React.useState(null);
+
+  function handleExport() {
+    const data = { workplaces, shifts, settings, exportedAt: new Date().toISOString(), version: APP_VERSION };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const today = new Date();
+    a.download = 'shift-ledger-backup-' + toDateStr(today.getFullYear(), today.getMonth(), today.getDate()) + '.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleFileChosen(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        setConfirmRestore(parsed);
+      } catch (err) {
+        alert('ファイルの読み込みに失敗しました。正しいバックアップファイルを選択してください。');
+      }
+      e.target.value = '';
+    };
+    reader.readAsText(file);
+  }
+
+  function doRestore() {
+    const parsed = confirmRestore || {};
+    setWorkplaces(Array.isArray(parsed.workplaces) ? parsed.workplaces.map(normalizeWorkplace) : []);
+    setShifts(Array.isArray(parsed.shifts) ? parsed.shifts.map(normalizeShift) : []);
+    setSettings(normalizeSettings(parsed.settings || {}));
+    setConfirmRestore(null);
+  }
+
+  return (
+    <div className="px-3 pt-4 pb-4">
+      <h1 className="font-serif text-2xl font-semibold mb-4 px-1">設定</h1>
+
+      <section className="bg-white rounded-lg border border-stone-200 p-4 mb-3">
+        <span className="block text-xs font-semibold text-stone-500 mb-2">週の開始日</span>
+        <div className="flex rounded-lg border border-stone-300 overflow-hidden text-sm">
+          <button onClick={() => setSettings({ ...settings, weekStart: 'sunday' })} className={"flex-1 py-2 " + (settings.weekStart === 'sunday' ? 'bg-stone-800 text-white' : 'bg-white text-stone-600')}>日曜始まり</button>
+          <button onClick={() => setSettings({ ...settings, weekStart: 'monday' })} className={"flex-1 py-2 " + (settings.weekStart === 'monday' ? 'bg-stone-800 text-white' : 'bg-white text-stone-600')}>月曜始まり</button>
+        </div>
+      </section>
+
+      <section className="bg-white rounded-lg border border-stone-200 p-4 mb-3 space-y-2">
+        <span className="block text-xs font-semibold text-stone-500 mb-1">データのバックアップ</span>
+        <button onClick={handleExport} className="w-full py-2.5 rounded-lg border border-stone-300 text-sm font-medium flex items-center justify-center gap-1.5">
+          <IconDownload size={16}/> データを書き出す（バックアップ）
+        </button>
+        <button onClick={() => fileInputRef.current && fileInputRef.current.click()} className="w-full py-2.5 rounded-lg border border-stone-300 text-sm font-medium flex items-center justify-center gap-1.5">
+          <IconUpload size={16}/> データを読み込む（復元）
+        </button>
+        <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={handleFileChosen} />
+      </section>
+
+      <section className="bg-white rounded-lg border border-stone-200 p-4 mb-3">
+        <span className="block text-xs font-semibold text-stone-500 mb-2">保存件数</span>
+        <p className="text-sm font-mono">勤務先 {workplaces.length}件 ・ シフト {shifts.length}件</p>
+      </section>
+
+      <div className="text-center text-xs text-stone-400 mt-6 space-y-0.5">
+        <p className="font-mono">バージョン {APP_VERSION}</p>
+        <p>製作者：のぶしゃん</p>
+      </div>
+
+      {confirmRestore && (
+        <ConfirmDialog message={"現在のデータは上書きされます。よろしいですか？"} confirmLabel="復元する"
+          onCancel={() => setConfirmRestore(null)} onConfirm={doRestore} />
+      )}
+    </div>
+  );
+}
+
+/* ===================== 下部ナビ ===================== */
+
+function BottomNav({ tab, setTab }) {
+  const items = [
+    { id: 'calendar', label: 'カレンダー', Icon: IconCalendar },
+    { id: 'workplaces', label: '勤務先', Icon: IconBriefcase },
+    { id: 'summary', label: '集計', Icon: IconBarChart },
+    { id: 'settings', label: '設定', Icon: IconSettings }
+  ];
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-stone-200 flex z-30">
+      {items.map(it => (
+        <button key={it.id} onClick={() => setTab(it.id)} className={"flex-1 flex flex-col items-center gap-0.5 py-2.5 " + (tab === it.id ? 'text-stone-800' : 'text-stone-400')}>
+          <it.Icon size={20} />
+          <span className="text-[10px] font-medium">{it.label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/* ===================== ルートアプリ ===================== */
+
+function App() {
+  const [workplaces, setWorkplaces] = useLocalStorageState('workplaces', normalizeWorkplace, true);
+  const [shifts, setShifts] = useLocalStorageState('shifts', normalizeShift, true);
+  const [settings, setSettings] = useLocalStorageState('settings', normalizeSettings, false);
+  const [tab, setTab] = React.useState('calendar');
+
+  const [daySheetDate, setDaySheetDate] = React.useState(null);
+  const [shiftEditor, setShiftEditor] = React.useState(null);
+  const [workplaceEditor, setWorkplaceEditor] = React.useState(null);
+
+  function openDay(date) { setDaySheetDate(date); }
+  function closeDay() { setDaySheetDate(null); }
+
+  function openNewShift() { setShiftEditor({ date: daySheetDate, shift: null }); }
+  function openEditShift(shiftId) {
+    const s = shifts.find(x => x.id === shiftId);
+    if (s) setShiftEditor({ date: s.date, shift: s });
+  }
+  function closeShiftEditor() { setShiftEditor(null); }
+  function saveShift(shift) {
+    setShifts(prev => prev.some(s => s.id === shift.id) ? prev.map(s => s.id === shift.id ? shift : s) : [...prev, shift]);
+    setShiftEditor(null);
+  }
+  function deleteShift(id) {
+    setShifts(prev => prev.filter(s => s.id !== id));
+    setShiftEditor(null);
+  }
+
+  function openNewWorkplace() { setWorkplaceEditor({ isNew: true, workplace: null }); }
+  function openEditWorkplace(id) { setWorkplaceEditor({ isNew: false, workplace: workplaces.find(w => w.id === id) }); }
+  function closeWorkplaceEditor() { setWorkplaceEditor(null); }
+  function saveWorkplace(w) {
+    setWorkplaces(prev => prev.some(x => x.id === w.id) ? prev.map(x => x.id === w.id ? w : x) : [...prev, w]);
+    setWorkplaceEditor(null);
+  }
+  function deleteWorkplace(id) {
+    setWorkplaces(prev => prev.filter(w => w.id !== id));
+    setWorkplaceEditor(null);
+  }
+
+  return (
+    <div className="min-h-screen bg-paper pb-20">
+      {tab === 'calendar' && <CalendarTab workplaces={workplaces} shifts={shifts} settings={settings} onOpenDay={openDay} />}
+      {tab === 'workplaces' && <WorkplacesTab workplaces={workplaces} onAdd={openNewWorkplace} onEdit={openEditWorkplace} onDelete={deleteWorkplace} />}
+      {tab === 'summary' && <SummaryTab workplaces={workplaces} shifts={shifts} settings={settings} />}
+      {tab === 'settings' && <SettingsTab settings={settings} setSettings={setSettings} workplaces={workplaces} shifts={shifts} setWorkplaces={setWorkplaces} setShifts={setShifts} />}
+
+      <BottomNav tab={tab} setTab={setTab} />
+
+      {daySheetDate && (
+        <DaySheet date={daySheetDate} workplaces={workplaces} shifts={shifts}
+          onClose={closeDay} onAddShift={openNewShift} onEditShift={openEditShift} onDeleteShift={deleteShift} />
+      )}
+
+      {shiftEditor && (
+        <ShiftEditorSheet date={shiftEditor.date} shift={shiftEditor.shift} workplaces={workplaces}
+          onClose={closeShiftEditor} onSave={saveShift} onDelete={deleteShift} />
+      )}
+
+      {workplaceEditor && (
+        <WorkplaceEditorSheet workplace={workplaceEditor.workplace}
+          onClose={closeWorkplaceEditor} onSave={saveWorkplace} onDelete={deleteWorkplace} />
+      )}
+    </div>
+  );
+}
+
+const rootEl = document.getElementById('root');
+const root = ReactDOM.createRoot(rootEl);
+root.render(<App />);
+const loadingEl = document.getElementById('loading-screen');
+if (loadingEl) loadingEl.style.display = 'none';
+
+</script>
+</body>
+</html>
