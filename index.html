@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>シフト台帳 v1.1.3</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    /* iPhone Safe Area（ホーム画面追加時のアドレスバー非表示対応） */
+    body {
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 font-sans min-h-screen">
+
+  <!-- ヘッダー -->
+  <header class="bg-indigo-600 text-white p-4 shadow-md sticky top-0 z-50">
+    <div class="max-w-md mx-auto flex justify-between items-center">
+      <h1 class="text-xl font-bold flex items-center gap-2">
+        <span>📅 シフト台帳</span>
+      </h1>
+      <!-- バージョンナンバー v1.1.3 -->
+      <span class="bg-indigo-800 text-xs px-2.5 py-1 rounded-full font-mono">v1.1.3</span>
+    </div>
+  </header>
+
+  <!-- メインコンテンツ -->
+  <main class="max-w-md mx-auto p-4 space-y-6 pb-24">
+
+    <!-- 今月の目標カード -->
+    <section class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 space-y-4">
+      <div class="flex justify-between items-center border-b pb-3 border-slate-100">
+        <h2 class="text-lg font-bold text-slate-700 flex items-center gap-2">
+          <i data-lucide="target" class="w-5 h-5 text-indigo-600"></i>
+          今月の目標
+        </h2>
+        <button onclick="promptSetGoal()" class="text-xs text-indigo-600 font-medium hover:underline">
+          目標変更
+        </button>
+      </div>
+
+      <!-- 目標額 / 確定収入 -->
+      <div class="grid grid-cols-2 gap-3 text-sm">
+        <div class="bg-slate-50 p-3 rounded-xl border border-slate-100">
+          <p class="text-xs text-slate-500 mb-1">目標金額</p>
+          <p class="text-base font-bold text-slate-800" id="displayTarget">￥0</p>
+        </div>
+        <div class="bg-slate-50 p-3 rounded-xl border border-slate-100">
+          <p class="text-xs text-slate-500 mb-1">確定収入（本日まで）</p>
+          <p class="text-base font-bold text-emerald-600" id="displayConfirmed">￥0</p>
+        </div>
+      </div>
+
+      <!-- 計算結果メイン表示 -->
+      <div class="bg-indigo-50 p-4 rounded-xl border border-indigo-100 space-y-3">
+        <div class="flex justify-between items-baseline">
+          <span class="text-xs font-semibold text-indigo-900">目標まであと（現在）</span>
+          <span class="text-xl font-black text-indigo-600" id="displayRemaining">￥0</span>
+        </div>
+
+        <!-- 進捗バー -->
+        <div class="w-full bg-indigo-200 h-2.5 rounded-full overflow-hidden">
+          <div id="progressBar" class="bg-indigo-600 h-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+
+        <!-- 本日からの日割り必要額 -->
+        <div class="flex justify-between items-center text-xs text-indigo-800 pt-2 border-t border-indigo-100/60">
+          <span class="font-medium">本日からの必要日割り（月末まで）</span>
+          <span class="font-bold text-indigo-900 text-sm"><span id="displayDailyRequired">￥0</span> <span class="text-xs text-indigo-600">/日</span></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- シフト・実績一覧 -->
+    <section class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 space-y-4">
+      <div class="flex justify-between items-center border-b pb-3 border-slate-100">
+        <h2 class="text-lg font-bold text-slate-700 flex items-center gap-2">
+          <i data-lucide="calendar" class="w-5 h-5 text-indigo-600"></i>
+          シフト・収入一覧
+        </h2>
+        <button onclick="addShiftPrompt()" class="bg-indigo-600 text-white text-xs px-3 py-1.5 rounded-lg font-medium shadow-sm hover:bg-indigo-700">
+          + シフト追加
+        </button>
+      </div>
+
+      <div id="shiftList" class="space-y-2 text-sm">
+        <!-- シフト要素が動的に入ります -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- スクリプト領域 -->
+  <script>
+    // --- データ初期設定 ---
+    let state = {
+      targetAmount: Number(localStorage.getItem('targetAmount')) || 250000,
+      shifts: JSON.parse(localStorage.getItem('shifts')) || [
+        { id: 1, date: '2026-08-05', title: '日勤', income: 12000, confirmed: true },
+        { id: 2, date: '2026-08-10', title: '夜勤', income: 24000, confirmed: true },
+        { id: 3, date: '2026-08-18', title: '日勤（見込み）', income: 12000, confirmed: false },
+        { id: 4, date: '2026-08-25', title: '夜勤（見込み）', income: 24000, confirmed: false }
+      ]
+    };
+
+    // --- 計算・UI更新ロジック ---
+    function render() {
+      // 1. 今日の日付と月末日数の算出
+      const today = new Date();
+      const currentYear = today.getFullYear();
+      const currentMonth = today.getMonth(); // 0~11
+      const currentDay = today.getDate(); // 例: 14日
+
+      // 今月の最終日を取得
+      const lastDayOfCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+
+      // 本日を含めた月末までの残り日数 (今日が14日、月末が31日なら 31 - 14 + 1 = 18日)
+      const remainingDays = Math.max(1, lastDayOfCurrentMonth - currentDay + 1);
+
+      // 2. 確定収入のみを合算（未確定のシフト見込みは除外）
+      const confirmedIncome = state.shifts
+        .filter(shift => shift.confirmed)
+        .reduce((sum, shift) => sum + Number(shift.income), 0);
+
+      // 3. 「目標まであと（現在）」の算出
+      const remainingTarget = Math.max(0, state.targetAmount - confirmedIncome);
+
+      // 4. 「本日からの必要日割り」の算出（端数は切り上げ）
+      const dailyRequired = Math.ceil(remainingTarget / remainingDays);
+
+      // 5. 達成率の算出（進捗バー用）
+      const progressPercent = Math.min(100, Math.round((confirmedIncome / state.targetAmount) * 100)) || 0;
+
+      // 6. DOM表示へ反映
+      document.getElementById('displayTarget').innerText = `￥${state.targetAmount.toLocaleString()}`;
+      document.getElementById('displayConfirmed').innerText = `￥${confirmedIncome.toLocaleString()}`;
+      document.getElementById('displayRemaining').innerText = `￥${remainingTarget.toLocaleString()}`;
+      document.getElementById('displayDailyRequired').innerText = `￥${dailyRequired.toLocaleString()}`;
+      document.getElementById('progressBar').style.width = `${progressPercent}%`;
+
+      // 7. シフト一覧の描画
+      const shiftListEl = document.getElementById('shiftList');
+      shiftListEl.innerHTML = '';
+
+      if (state.shifts.length === 0) {
+        shiftListEl.innerHTML = '<p class="text-xs text-slate-400 text-center py-4">シフトデータがありません</p>';
+      } else {
+        state.shifts.forEach(shift => {
+          const item = document.createElement('div');
+          item.className = `p-3 rounded-xl border flex justify-between items-center ${
+            shift.confirmed ? 'bg-slate-50 border-slate-200' : 'bg-amber-50/50 border-amber-200/60'
+          }`;
+          item.innerHTML = `
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-bold text-slate-700">${shift.date}</span>
+                <span class="text-xs px-2 py-0.5 rounded ${shift.confirmed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">
+                  ${shift.confirmed ? '確定収入' : '見込み'}
+                </span>
+              </div>
+              <p class="text-xs text-slate-500 mt-0.5">${shift.title}</p>
+            </div>
+            <div class="text-right">
+              <span class="font-bold text-slate-800">￥${Number(shift.income).toLocaleString()}</span>
+              <div>
+                <button onclick="toggleConfirmed(${shift.id})" class="text-[10px] text-indigo-600 underline ml-2">
+                  ${shift.confirmed ? '見込みに戻す' : '確定にする'}
+                </button>
+              </div>
+            </div>
+          `;
+          shiftListEl.appendChild(item);
+        });
+      }
+
+      // Lucide Icons 再初期化
+      if (window.lucide) {
+        lucide.createIcons();
+      }
+
+      // ローカルストレージ保存
+      localStorage.setItem('targetAmount', state.targetAmount);
+      localStorage.setItem('shifts', JSON.stringify(state.shifts));
+    }
+
+    // --- 操作アクション ---
+    function promptSetGoal() {
+      const input = prompt('今月の目標金額を入力してください（半角数字）', state.targetAmount);
+      if (input !== null && !isNaN(input) && input > 0) {
+        state.targetAmount = Number(input);
+        render();
+      }
+    }
+
+    function toggleConfirmed(id) {
+      state.shifts = state.shifts.map(shift => {
+        if (shift.id === id) {
+          return { ...shift, confirmed: !shift.confirmed };
+        }
+        return shift;
+      });
+      render();
+    }
+
+    function addShiftPrompt() {
+      const date = prompt('日付を入力してください (例: 2026-08-20)');
+      if (!date) return;
+      const title = prompt('勤務先・内容を入力してください', '日勤');
+      if (!title) return;
+      const income = prompt('見込み収入金額を入力してください', '12000');
+      if (!income || isNaN(income)) return;
+
+      state.shifts.push({
+        id: Date.now(),
+        date: date,
+        title: title,
+        income: Number(income),
+        confirmed: false
+      });
+      render();
+    }
+
+    // 初回実行
+    document.addEventListener('DOMContentLoaded', () => {
+      render();
+    });
+  </script>
+</body>
+</html>
